@@ -62,7 +62,11 @@ Internship Assignment for LOBB
 
 The URL shortener includes a user-friendly web interface. To use it:
 
-1. Open the index.html file in your browser.
+1. Open your browser and navigate to:
+   ```
+   http://localhost:8000
+   ```
+
 2. Enter the URL you want to shorten in the input field
 3. Click the "Shorten URL" button
 4. The result will show both the JSON response and a clickable short URL link
@@ -73,7 +77,7 @@ The URL shortener provides the following REST API endpoints:
 
 | Endpoint | Method | Description | Request Body | Response |
 |----------|--------|-------------|--------------|----------|
-| `/` | GET | Root endpoint with API information | None | `{"message": "URL Shortener Assignment..."}` |
+| `/` | GET | HTML interface for the URL shortener | None | HTML page |
 | `/shorten` | POST | Create a short URL | `{"target_url": "https://example.com/..."}` | JSON with short code and URL |
 | `/{short_code}` | GET | Redirect to original URL | None | HTTP redirect to target URL |
 | `/database/all` | GET | List all shortened URLs | None | Array of URL objects |

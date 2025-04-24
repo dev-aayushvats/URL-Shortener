@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, HttpUrl
 import shortuuid
@@ -49,10 +50,12 @@ class URLInfo(BaseModel):
         orm_mode = True
 
 
-# /get route returning a simple message and instructions on how to shorten a URL
-@app.get("/")
+# Root route serving the HTML page
+@app.get("/", response_class=HTMLResponse)
 def read_root():
-    return {"message": "URL Shortener Assignment. Send a POST request with a JSON body containing the target URL to /shorten to create a short URL."}
+    with open("index.html", "r") as f:
+        html_content = f.read()
+    return HTMLResponse(content=html_content)
 
 
 # /shorten route returning a shortened URL as required in the assignment
