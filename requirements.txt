@@ -1,0 +1,4 @@
+fastapi[standard]>=0.104.0
+sqlalchemy>=2.0.0
+shortuuid>=1.0.0
+redis>=4.5.0
