@@ -11,6 +11,12 @@ Internship Assignment for LOBB
 
 ### Installation
 
+0. Clone the Repository (If viewing on github):
+   ```bash
+   git clone https://github.com/dev-aayushvats/URL-Shortener.git
+   cd URL-Shortener
+   ```
+
 1. Create a virtual environment:
    ```bash   
    # For Windows
