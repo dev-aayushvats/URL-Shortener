@@ -58,13 +58,26 @@ class RedisCache:
             return None
 
 
+class NullCache:
+    """Cache that never stores anything (CACHE_ENABLED=false)."""
+
+    def get(self, key: str) -> str | None:
+        return None
+
+    def set(self, key: str, value: str, ttl: int | None = None) -> None:
+        return None
+
+    def incr(self, key: str, window_seconds: int) -> int | None:
+        return None
+
+
+_cache: Cache | None = None
+
+
 def get_cache() -> Cache:
     """FastAPI dependency (overridable in tests)."""
     global _cache
     if _cache is None:
         s = get_settings()
-        _cache = RedisCache(s.redis_url, s.cache_ttl_seconds)
+        _cache = RedisCache(s.redis_url, s.cache_ttl_seconds) if s.cache_enabled else NullCache()
     return _cache
-
-
-_cache: RedisCache | None = None

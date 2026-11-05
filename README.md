@@ -38,6 +38,8 @@ pytest        # uses in-memory SQLite and a fake cache; no Docker needed
 ruff check . && ruff format --check .
 ```
 
+Load test results and how to reproduce them: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
+
 CI (GitHub Actions) runs lint, tests and a Docker build on every push and PR.
 
 Changing the schema: edit `app/models.py`, then `alembic revision --autogenerate -m "describe change"` and `alembic upgrade head`.
@@ -158,3 +160,4 @@ The `urls` table stores mappings between short codes and target URLs:
 - **Expiry is enforced in the cache too:** cached entries get `min(24h, remaining lifetime)` as TTL, so an expired link can never be served from Redis.
 - **Rate limiting:** fixed-window counter in Redis (`INCR` + `EXPIRE NX` in one transaction), per client IP, on `POST /shorten` only. It fails open if Redis is down. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy ip>`. Fixed windows allow up to 2x bursts at window edges; a sliding window or token bucket would be the upgrade.
 - Settings: `RATE_LIMIT_PER_MINUTE`, `MIN_EXPIRY_SECONDS`, `MAX_EXPIRY_SECONDS` (env vars).
+- **Measured:** ~910 req/s on one worker and ~1,250 req/s on four (95% redirects / 5% creates, laptop); the Redis cache gave +64% redirect throughput and halved p95 latency vs. no cache. See [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for method and caveats.

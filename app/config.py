@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/url_shortener"
     redis_url: str = "redis://localhost:6379/0"
+    cache_enabled: bool = True  # set false to benchmark/debug without Redis
     cache_ttl_seconds: int = 86400  # 24 hours
     short_code_length: int = 8
     rate_limit_per_minute: int = 10  # POST /shorten, per client IP
