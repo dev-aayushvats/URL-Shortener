@@ -11,50 +11,23 @@ Internship Assignment for LOBB
 
 ### Installation
 
-0. Clone the Repository (If viewing on github):
-   ```bash
-   git clone https://github.com/dev-aayushvats/URL-Shortener.git
-   cd URL-Shortener
-   ```
+```bash
+git clone https://github.com/dev-aayushvats/URL-Shortener.git && cd URL-Shortener
+python3 -m venv venv && source venv/bin/activate      # Windows: venv\\Scripts\\activate
+pip install -r requirements-dev.txt
+cp .env.example .env                                  # defaults work with docker-compose
+docker compose up -d                                  # Postgres + Redis
+fastapi dev app/main.py                               # use `fastapi run app/main.py` in prod
+```
 
-1. Create a virtual environment:
-   ```bash   
-   # For Windows
-   python -m venv venv
-   venv\Scripts\activate
-   
-   # For macOS/Linux
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
+Open http://localhost:8000 (UI) or http://localhost:8000/docs (interactive API docs).
 
-2. Create a `.env` file with the following content (I am aware that we should not include the .env files but I have included here for quick setup):
-   ```
-   BASE_URL=http://localhost:8000
-   DATABASE_URL=postgresql://postgres:postgres@postgres:5432/url_shortener
-   REDIS_URL=redis://localhost:6379/0
-   ```
+### Tests and lint
 
-3. Install the required Python packages:
-   ```
-   pip install -r requirements.txt
-   ```
-
-4. Start the database and Redis with Docker Compose (make sure that Docker engine is running in the background):
-   ```
-   docker-compose up -d
-   ```
-   You can check if the docker database and redis started or not by running ``` docker ps ```. It should list both the instances.
-
-5. Run the application:
-   ```
-   fastapi run app.py
-   ```
-
-   For development with auto-reload:
-   ```
-   fastapi dev app.py
-   ```
+```bash
+pytest        # uses in-memory SQLite and a fake cache; no Docker needed
+ruff check .
+```
 
 ## Usage
 
@@ -80,7 +53,6 @@ The URL shortener provides the following REST API endpoints:
 | `/` | GET | HTML interface for the URL shortener | None | HTML page |
 | `/shorten` | POST | Create a short URL | `{"target_url": "https://example.com/..."}` | JSON with short code and URL |
 | `/{short_code}` | GET | Redirect to original URL | None | HTTP redirect to target URL |
-| `/database/all` | GET | List all shortened URLs | None | Array of URL objects |
 
 #### Create a Short URL
 
@@ -119,7 +91,7 @@ curl -X 'POST' \
 
 **Endpoint:** `/{short_code}`  
 **Method:** GET  
-**Response:** HTTP 302 redirect to the original URL
+**Response:** HTTP 302 redirect (404 if unknown) to the original URL
 
 Simply visit the short URL in your browser:
 ```
@@ -129,17 +101,6 @@ http://localhost:8000/AbCdEf12
 Or use curl:
 ```bash
 curl -L 'http://localhost:8000/AbCdEf12'
-```
-
-#### List All URLs
-
-**Endpoint:** `/database/all`  
-**Method:** GET  
-**Response:** JSON array of all URL objects in the database
-
-Example with curl:
-```bash
-curl -X 'GET' 'http://localhost:8000/database/all'
 ```
 
 ## Architecture
@@ -158,3 +119,11 @@ The `urls` table stores mappings between short codes and target URLs:
 | url_id      | String    | Primary key, unique short code    |
 | target_url  | String    | Original URL to redirect to       |
 | created_at  | DateTime  | Timestamp when URL was shortened  |
+
+## Design notes
+
+- **Idempotent creation under concurrency:** `target_hash` (SHA-256 of the URL) has a `UNIQUE` constraint, and the short code is the primary key. The service inserts first and handles `IntegrityError`, rather than check-then-insert (which races).
+- **Short codes:** 8 random base62 chars from `secrets` (~218 trillion combinations); collisions are caught by the DB and retried.
+- **Cache-aside:** Redis is consulted first; any Redis failure degrades to a cache miss instead of an error.
+- **302 redirects** so browsers don't permanently cache the mapping (keeps expiry/analytics possible).
+- **Config** via environment variables (`pydantic-settings`); `.env` is git-ignored, `.env.example` is committed.
