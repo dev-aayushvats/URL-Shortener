@@ -21,26 +21,6 @@ This document records every kind of check performed on the project, what each on
 
 Total: **55 tests**: 35 run anywhere with no setup, and 20 more run when `TEST_DATABASE_URL` and `TEST_REDIS_URL` point at test databases (skipped otherwise).
 
----|---|---|---|---|
-| 1 | Unit/integration tests (fast, SQLite + fake cache) | pytest + FastAPI TestClient | Application logic behaves correctly | 30 / 30 passed |
-| 2 | **Concurrency tests on real Postgres** | pytest + threads + Postgres | The DB constraints hold under simultaneous requests | 3 / 3 passed; **mutation-checked** |
-| 3 | **Migration tests on real Postgres** | pytest + Alembic + Postgres | Migrations build the schema the models declare, keep data, and reverse | 3 / 3 passed |
-| 4 | **Code coverage** | pytest-cov | How much of `app/` the tests execute | 92%, gated at 85% in CI |
-| 5 | Lint and formatting | ruff | Code is clean, consistent, free of common bugs | 0 issues |
-| 6 | Manual real-infrastructure end-to-end check | Docker Compose + curl | Full stack works with real Postgres, Redis and the container image | All steps passed |
-| 7 | Load test | Locust | Throughput and latency, and the value of the cache | 0 failures; numbers below |
-| 8 | Continuous integration | GitHub Actions | Checks 1-5 plus a Docker build run on every push | Configured (now with Postgres), **not yet run on GitHub** |
-
-Total: **36 tests** (30 run anywhere; 6 more run when `TEST_DATABASE_URL` points at a Postgres test database, and are skipped otherwise).
-
----|---|---|---|---|
-| 1 | Automated unit/integration tests | pytest + FastAPI TestClient | Application logic behaves correctly | 22 / 22 passed |
-| 2 | Lint and formatting | ruff | Code is clean, consistent, free of common bugs | 0 issues |
-| 3 | Real-infrastructure end-to-end check | Docker Compose + curl | It works with real Postgres and Redis, not just test doubles | All steps passed |
-| 4 | Database migration check | Alembic + Postgres | Schema upgrades, downgrades and keeps data | Passed |
-| 5 | Load test | Locust | Throughput and latency, and the value of the cache | 0 failures; numbers below |
-| 6 | Continuous integration | GitHub Actions | Checks 1 and 2 plus a Docker build run on every push | Configured, **not yet run on GitHub** |
-
 ---
 
 ## 1. Automated tests (pytest, fast)
@@ -52,9 +32,9 @@ Total: **36 tests** (30 run anywhere; 6 more run when `TEST_DATABASE_URL` points
 **Test doubles used (important to understand the limits):**
 - **Database:** an in-memory **SQLite** database instead of Postgres, so tests run in about 0.2 seconds with no Docker.
 - **Cache:** a `FakeCache` (a Python dict) instead of Redis. It records the TTL passed to `set` and counts `incr` calls, so tests can assert on caching and rate-limit behaviour.
-- Because of these substitutes, tests prove *application logic*. They do **not** prove Postgres- or Redis-specific behaviour. That is why checks 3 and 4 exist.
+- Because of these substitutes, tests prove *application logic*. They do **not** prove Postgres- or Redis-specific behaviour. That is why the real-Postgres, real-Redis and live-server tests (sections 1b-1f) and the manual end-to-end check (section 3) exist.
 
-**Outcome: 22 passed in about 0.2 s** (35 including the service, UI-wiring and logging tests below).
+**Outcome: 22 passed in about 0.2 s** (35 including the service, UI-wiring and logging tests below; the table below it lists the first two files, the rest follow).
 
 ### `tests/test_urls.py` (core behaviour)
 
@@ -229,7 +209,7 @@ Settings: `LOG_LEVEL` (default `INFO`) and `LOG_FORMAT` (`json` or `text`). The 
 | `main.py`, `models.py`, `schemas.py`, `config.py`, `ratelimit.py` | 100% | none |
 | `services.py` | 98% | one defensive line |
 | `logging_config.py` | 96% | the plain-text format branch |
-| `cache.py` | 85% | `NullCache` and the `get_cache` wiring (the real Redis paths are covered by the integration tests, but the coverage run in the table above is the combined run with Redis enabled) |
+| `cache.py` | 85% | `NullCache` (the `CACHE_ENABLED=false` mode, exercised only in the load test) and the `get_cache` factory. The real Redis paths are covered when the integration tests run |
 | `middleware.py` | 86% | the unhandled-exception branch |
 | `database.py` | 69% | the real `get_db` session dependency (tests override it) |
 

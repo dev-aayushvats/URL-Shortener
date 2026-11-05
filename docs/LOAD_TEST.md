@@ -2,6 +2,8 @@
 
 Measured with [Locust](https://locust.io) (`loadtest/locustfile.py`).
 
+> **Note:** these runs were made before request logging (`RequestLogMiddleware`) was added, so they exclude its overhead. Re-run the load test before quoting them as current.
+
 ## Method
 
 - **Traffic mix:** 95% `GET /{code}` (redirect, not followed) / 5% `POST /shorten` (new URL each time). 200 links are seeded first.
