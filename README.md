@@ -11,13 +11,22 @@ Internship Assignment for LOBB
 
 ### Installation
 
+**Option A: everything in Docker (simplest)**
+
 ```bash
 git clone https://github.com/dev-aayushvats/URL-Shortener.git && cd URL-Shortener
+docker compose up -d --build     # API + Postgres + Redis; migrations run on startup
+```
+
+**Option B: local development with auto-reload**
+
+```bash
 python3 -m venv venv && source venv/bin/activate      # Windows: venv\\Scripts\\activate
 pip install -r requirements-dev.txt
-cp .env.example .env                                  # defaults work with docker-compose
-docker compose up -d                                  # Postgres + Redis
-fastapi dev app/main.py                               # use `fastapi run app/main.py` in prod
+cp .env.example .env
+docker compose up -d postgres redis
+alembic upgrade head                                  # apply DB migrations
+fastapi dev app/main.py
 ```
 
 Open http://localhost:8000 (UI) or http://localhost:8000/docs (interactive API docs).
@@ -26,8 +35,12 @@ Open http://localhost:8000 (UI) or http://localhost:8000/docs (interactive API d
 
 ```bash
 pytest        # uses in-memory SQLite and a fake cache; no Docker needed
-ruff check .
+ruff check . && ruff format --check .
 ```
+
+CI (GitHub Actions) runs lint, tests and a Docker build on every push and PR.
+
+Changing the schema: edit `app/models.py`, then `alembic revision --autogenerate -m "describe change"` and `alembic upgrade head`.
 
 ## Usage
 

@@ -1,4 +1,19 @@
 services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      BASE_URL: http://localhost:8000
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/url_shortener
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:15
     container_name: url_shortener_db
@@ -10,6 +25,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d url_shortener"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   redis:
@@ -20,8 +40,13 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
 volumes:
   postgres_data:
-  redis_data: 
+  redis_data:

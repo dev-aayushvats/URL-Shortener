@@ -1,5 +1,4 @@
 import logging
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -11,7 +10,7 @@ from sqlalchemy.orm import Session
 from app import models, services
 from app.cache import Cache, get_cache
 from app.config import Settings, get_settings
-from app.database import Base, engine, get_db
+from app.database import get_db
 from app.schemas import ShortenRequest, ShortenResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -19,14 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # NOTE: fine for a small project; use Alembic migrations for schema changes.
-    Base.metadata.create_all(bind=engine)
-    yield
-
-
-app = FastAPI(title="URL Shortener", version="1.0.0", lifespan=lifespan)
+# Schema is managed by Alembic (`alembic upgrade head`), not created at import/startup.
+app = FastAPI(title="URL Shortener", version="1.0.0")
 
 # No CORS middleware: the UI is served from the same origin as the API.
 
