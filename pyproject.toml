@@ -10,7 +10,11 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs real PostgreSQL via TEST_DATABASE_URL"]
+markers = [
+  "integration: needs real PostgreSQL via TEST_DATABASE_URL",
+  "needs_redis: also needs real Redis via TEST_REDIS_URL",
+  "e2e: drives a real browser (Playwright)",
+]
 
 [tool.coverage.run]
 source = ["app"]

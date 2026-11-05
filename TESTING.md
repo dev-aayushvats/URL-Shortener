@@ -6,6 +6,22 @@ This document records every kind of check performed on the project, what each on
 
 | # | Check | Tool | What it proves | Outcome |
 |---|---|---|---|---|
+| 1 | Fast unit/integration tests (SQLite + fake cache) | pytest + FastAPI TestClient | Application logic behaves correctly | 35 / 35 passed |
+| 2 | Concurrency tests on real Postgres | pytest + threads + Postgres | DB constraints hold under simultaneous requests | 3 / 3; mutation-checked |
+| 3 | Migration tests on real Postgres | pytest + Alembic + Postgres | Migrations match the models, keep data, and reverse | 3 / 3 |
+| 4 | **Real Redis tests** | pytest + Redis 7 | Cache TTLs, atomic counters and expiry behave on real Redis | 6 / 6; mutation-checked |
+| 5 | **Live HTTP tests (real server, real DB, real Redis)** | pytest + uvicorn subprocess + httpx | The whole deployed app is correct under concurrent HTTP traffic | 5 / 5; mutation-checked |
+| 6 | **Browser UI tests** | Playwright + headless Chromium | The page actually works for a user | 3 / 3 |
+| 7 | **Structured logging tests** | pytest | Logs are JSON with a correlation id | 5 / 5 (inside the 35) |
+| 8 | Code coverage | pytest-cov | How much of `app/` the tests execute | 93%, gated at 85% in CI |
+| 9 | Lint and formatting | ruff | Clean, consistent, no common bugs | 0 issues |
+| 10 | Manual real-infrastructure end-to-end check | Docker Compose + curl | Full container stack works | All steps passed |
+| 11 | Load test | Locust | Throughput and latency, value of the cache | 0 failures |
+| 12 | Continuous integration | GitHub Actions | All of the above on every push | Configured (Postgres + Redis + Chromium), **not yet run on GitHub** |
+
+Total: **55 tests**: 35 run anywhere with no setup, and 20 more run when `TEST_DATABASE_URL` and `TEST_REDIS_URL` point at test databases (skipped otherwise).
+
+---|---|---|---|---|
 | 1 | Unit/integration tests (fast, SQLite + fake cache) | pytest + FastAPI TestClient | Application logic behaves correctly | 30 / 30 passed |
 | 2 | **Concurrency tests on real Postgres** | pytest + threads + Postgres | The DB constraints hold under simultaneous requests | 3 / 3 passed; **mutation-checked** |
 | 3 | **Migration tests on real Postgres** | pytest + Alembic + Postgres | Migrations build the schema the models declare, keep data, and reverse | 3 / 3 passed |
@@ -38,7 +54,7 @@ Total: **36 tests** (30 run anywhere; 6 more run when `TEST_DATABASE_URL` points
 - **Cache:** a `FakeCache` (a Python dict) instead of Redis. It records the TTL passed to `set` and counts `incr` calls, so tests can assert on caching and rate-limit behaviour.
 - Because of these substitutes, tests prove *application logic*. They do **not** prove Postgres- or Redis-specific behaviour. That is why checks 3 and 4 exist.
 
-**Outcome: 22 passed in about 0.2 s** (30 including the service and UI tests below).
+**Outcome: 22 passed in about 0.2 s** (35 including the service, UI-wiring and logging tests below).
 
 ### `tests/test_urls.py` (core behaviour)
 
@@ -128,17 +144,93 @@ Total: **36 tests** (30 run anywhere; 6 more run when `TEST_DATABASE_URL` points
 
 ---
 
-## 1d. Code coverage
+## 1d. Real Redis tests
+
+**File:** `tests/integration/test_redis.py`. **Tools:** pytest + a real Redis 7 server (`TEST_REDIS_URL`, must use a non-zero DB index because the tests flush it).
+
+**What it means:** the fast tests replace Redis with a Python dict, so they cannot prove how real Redis behaves. These tests check the cache class and the rate-limit counter against the real thing.
+
+| Test | What it measures / verifies | Outcome |
+|---|---|---|
+| `test_set_get_roundtrip_with_default_ttl` | A value round-trips, and the key gets the default TTL (checked with Redis `TTL`) | Passed |
+| `test_explicit_ttl_is_capped_by_default_ttl` | A shorter explicit TTL is honoured, a longer one is capped (how expiring links stay correct in cache) | Passed |
+| `test_non_positive_ttl_is_not_cached` | A link with no remaining life is never cached | Passed |
+| `test_miss_returns_none` | A missing key is a clean miss | Passed |
+| `test_incr_counts_and_sets_expiry_once` | The counter increments, and the window expiry is set **once** (`EXPIRE NX`) and does not slide forward on later hits | Passed |
+| `test_incr_is_atomic_under_threads` | 200 increments from 20 threads return exactly 1..200 with no lost or duplicate counts | Passed |
+
+**Mutation check:** I replaced the atomic `INCR` pipeline with a non-atomic read-then-write. `test_incr_is_atomic_under_threads` **failed** (duplicate counts such as `[1, 1, 2, 2, ...]`), proving it detects the bug. The change was reverted.
+
+---
+
+## 1e. Live HTTP tests (the whole stack)
+
+**File:** `tests/integration/test_live_http.py`. **Tools:** pytest, a real `uvicorn` server started as a subprocess on a free port (with Alembic migrations applied first), `httpx` as the HTTP client, real Postgres and real Redis.
+
+**What it means:** earlier concurrency tests called the service layer. These send **real concurrent HTTP requests** to the real server, so they cover routing, validation, the rate limiter, the DB and the cache together, as in production. Threads are released simultaneously with a `threading.Barrier`.
+
+| Test | What it measures / verifies | Outcome |
+|---|---|---|
+| `test_full_flow_create_redirect_cache` | Create, redirect (302), and the key appears in Redis only after the first redirect, with a ~24 h TTL | Passed |
+| `test_http_race_same_url_one_row_one_code` | 30 simultaneous POSTs of one URL: all 200, one code, **one DB row** | Passed |
+| `test_http_race_same_alias_one_winner` | 30 simultaneous POSTs of one alias: exactly one **200** and 29 **409** | Passed |
+| `test_rate_limit_is_exact_under_concurrency` | 50 simultaneous POSTs against a limit of 10: **exactly 10 succeed and 40 get 429** (each with `Retry-After`) | Passed |
+| `test_redirect_still_works_when_cache_entry_missing` | After flushing Redis (simulated eviction or restart), redirects still work from Postgres | Passed |
+
+**Mutation check:** with the non-atomic counter above, the rate-limit test **failed: 49 of 50 requests got through a limit of 10**. So the "exactly 10" result is meaningful evidence that the limiter is race-free.
+
+---
+
+## 1f. Browser UI tests
+
+**File:** `tests/integration/test_ui_browser.py`. **Tools:** [Playwright](https://playwright.dev/python/) driving headless Chromium against the live server.
+
+**What it means:** the earlier UI tests only checked the HTML text. These load the page in a real browser, fill the form, click the button and check what the user sees, which also exercises the JavaScript.
+
+| Test | What it measures / verifies | Outcome |
+|---|---|---|
+| `test_shorten_through_the_ui_and_follow_link` | Enter a URL, click Shorten, a short link appears, and navigating to it lands on the target | Passed |
+| `test_custom_alias_and_expiry_through_the_ui` | Alias and expiry selections reach the API; the result shows the alias and a non-null `expires_at` | Passed |
+| `test_taken_alias_shows_error_dialog` | Submitting the same alias twice shows an error dialog containing 409 / "already taken" | Passed |
+
+**Limits:** one browser (Chromium) only, and it checks behaviour, not visual design or cross-browser layout.
+
+---
+
+## 1g. Structured logging tests
+
+**Files:** `app/logging_config.py`, `app/middleware.py`, `tests/test_logging.py`. **What it means:** logs are one JSON object per line (easy to ship to CloudWatch, Datadog, etc.), and every request has a correlation id that appears in the response header and in all log lines for that request.
+
+Example access-log line (real output):
+```json
+{"ts": "2026-11-05T16:19:25.687+00:00", "level": "INFO", "logger": "app.access", "message": "request", "request_id": "demo-1", "method": "GET", "path": "/health", "status": 200, "duration_ms": 6.33, "client_ip": "testclient"}
+```
+
+| Test | What it verifies |
+|---|---|
+| `test_request_id_generated_and_returned` | Every response carries a generated `X-Request-ID` |
+| `test_safe_client_request_id_is_echoed` | A client-supplied id is reused, so traces can span services |
+| `test_unsafe_request_id_is_replaced` | An id with spaces or control characters is discarded, which prevents log injection |
+| `test_access_log_is_structured` | The access log record has method, path, status and duration |
+| `test_json_formatter_output` | The formatter emits valid JSON including extra fields |
+
+Settings: `LOG_LEVEL` (default `INFO`) and `LOG_FORMAT` (`json` or `text`). The middleware is pure ASGI, so it avoids the overhead of Starlette's `BaseHTTPMiddleware`. Logging every redirect at INFO has a cost at high request rates; I did not re-run the load test with logging enabled.
+
+---
+
+## 1h. Code coverage
 
 **Tool:** `pytest-cov` (`pytest --cov=app`). **What it means:** the percentage of lines in `app/` executed by at least one test. It shows what is *untested*, not whether the tests are good (the mutation check above is the better evidence of quality).
 
-**Outcome:** **92%** (was 90% before the new tests; `app/main.py` went from 98% to 100%). CI fails if it drops below **85%**.
+**Outcome:** **93%** (was 90% before the added tests). CI fails if it drops below **85%**.
 
 | Module | Coverage | Not covered |
 |---|---|---|
 | `main.py`, `models.py`, `schemas.py`, `config.py`, `ratelimit.py` | 100% | none |
 | `services.py` | 98% | one defensive line |
-| `cache.py` | 76% | the real Redis success paths and `NullCache` (the Redis happy path is covered by the manual end-to-end check and load test, not by pytest) |
+| `logging_config.py` | 96% | the plain-text format branch |
+| `cache.py` | 85% | `NullCache` and the `get_cache` wiring (the real Redis paths are covered by the integration tests, but the coverage run in the table above is the combined run with Redis enabled) |
+| `middleware.py` | 86% | the unhandled-exception branch |
 | `database.py` | 69% | the real `get_db` session dependency (tests override it) |
 
 ---
@@ -253,22 +345,24 @@ Full method and reproduction steps: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 **File:** `.github/workflows/ci.yml`. On every push to `main` and every pull request it runs:
 1. `ruff check` and `ruff format --check`
-2. `pytest` with coverage, failing under 85%. A **Postgres 15 service container** is started and `TEST_DATABASE_URL` is set, so the **concurrency and migration tests run in CI too** (they are not skipped there).
-3. A separate job does a `docker build`.
+2. Service containers: **Postgres 15 and Redis 7**, with `TEST_DATABASE_URL` and `TEST_REDIS_URL` set, so the concurrency, migration, Redis, live-HTTP and browser tests all **run in CI** (they are not skipped there).
+3. `playwright install --with-deps chromium` for the browser tests.
+4. `pytest` with coverage, failing under 85%.
+5. A separate job does a `docker build`.
 
-**Status: configured but not yet executed on GitHub** (nothing has been pushed since it was changed). The workflow file parses as valid YAML, and the exact test command (`pytest -q --cov=app --cov-fail-under=85` with `TEST_DATABASE_URL` set) passes locally against a real Postgres. Pushing will confirm it in a clean environment.
+**Status: configured but not yet executed on GitHub** (nothing has been pushed since it was changed). The workflow file parses as valid YAML, and the same test command passes locally against real Postgres, Redis and Chromium. The most likely first-run problems are environment differences (for example, Chromium system packages), which pushing will reveal.
 
 ---
 
 ## Remaining known gaps
 
-- **No true browser UI test** (rendering, JavaScript behaviour). Would need Playwright.
-- **Redis success paths** are verified manually and by the load test, not by pytest. A Redis service in CI would close this.
-- **Concurrency tests call the service layer**, not concurrent HTTP requests.
-- The CI workflow has not yet run on GitHub.
+- **The CI workflow has not yet run on GitHub.**
+- **Browser coverage is Chromium only**, and the tests check behaviour rather than visual layout.
+- **The load test was not re-run with request logging enabled**, so the published throughput numbers predate the logging middleware.
+- **No click analytics** (not implemented; it needs a design decision on durability vs redirect latency).
+- Race tests can in principle pass by luck; repetition and the mutation checks make that very unlikely, but it is not a formal proof.
 
 ---
-
 
 ## How to re-run everything
 
@@ -279,9 +373,11 @@ pytest
 ruff check . && ruff format --check .
 
 # Everything, including real-Postgres concurrency + migration tests, with coverage
-docker compose up -d postgres
+docker compose up -d postgres redis
 docker compose exec postgres psql -U postgres -c "create database url_shortener_test"
 export TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/url_shortener_test
+export TEST_REDIS_URL=redis://localhost:6379/15     # non-zero DB index: tests FLUSH it
+playwright install chromium                          # once, for browser tests
 pytest --cov=app --cov-report=term-missing
 
 # Manual real-stack check and migrations

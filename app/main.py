@@ -1,4 +1,3 @@
-import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -12,16 +11,20 @@ from app import models, services
 from app.cache import Cache, get_cache
 from app.config import Settings, get_settings
 from app.database import get_db
+from app.logging_config import configure_logging
+from app.middleware import RequestLogMiddleware
 from app.ratelimit import rate_limit
 from app.schemas import RESERVED_ALIASES, ShortenRequest, ShortenResponse
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+configure_logging(get_settings().log_level, get_settings().log_format)
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 
 
 # Schema is managed by Alembic (`alembic upgrade head`), not created at import/startup.
 app = FastAPI(title="URL Shortener", version="1.0.0")
+
+app.add_middleware(RequestLogMiddleware)
 
 # No CORS middleware: the UI is served from the same origin as the API.
 

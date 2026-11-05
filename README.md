@@ -162,3 +162,4 @@ The `urls` table stores mappings between short codes and target URLs:
 - **Rate limiting:** fixed-window counter in Redis (`INCR` + `EXPIRE NX` in one transaction), per client IP, on `POST /shorten` only. It fails open if Redis is down. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy ip>`. Fixed windows allow up to 2x bursts at window edges; a sliding window or token bucket would be the upgrade.
 - Settings: `RATE_LIMIT_PER_MINUTE`, `MIN_EXPIRY_SECONDS`, `MAX_EXPIRY_SECONDS` (env vars).
 - **Measured:** ~910 req/s on one worker and ~1,250 req/s on four (95% redirects / 5% creates, laptop); the Redis cache gave +64% redirect throughput and halved p95 latency vs. no cache. See [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for method and caveats.
+- **Observability:** JSON logs (one line per request with `request_id`, status, duration) and an `X-Request-ID` header for tracing. `LOG_LEVEL` and `LOG_FORMAT` (`json`/`text`) are configurable.
