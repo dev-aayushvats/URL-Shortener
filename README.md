@@ -38,7 +38,7 @@ pytest        # uses in-memory SQLite and a fake cache; no Docker needed
 ruff check . && ruff format --check .
 ```
 
-Load test results and how to reproduce them: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
+Full test and verification report: [TESTING.md](TESTING.md). Load test results and how to reproduce them: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 CI (GitHub Actions) runs lint, tests and a Docker build on every push and PR.
 
