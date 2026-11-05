@@ -17,7 +17,7 @@ This document records every kind of check performed on the project, what each on
 | 9 | Lint and formatting | ruff | Clean, consistent, no common bugs | 0 issues |
 | 10 | Manual real-infrastructure end-to-end check | Docker Compose + curl | Full container stack works | All steps passed |
 | 11 | Load test | Locust | Throughput and latency, value of the cache | 0 failures |
-| 12 | Continuous integration | GitHub Actions | All of the above on every push | Configured (Postgres + Redis + Chromium), **not yet run on GitHub** |
+| 12 | Continuous integration | GitHub Actions | All of the above on every push | **Passed on GitHub** (run on commit `c3e238d`: `test` job 87 s, `docker-build` job 23 s) |
 
 Total: **55 tests**: 35 run anywhere with no setup, and 20 more run when `TEST_DATABASE_URL` and `TEST_REDIS_URL` point at test databases (skipped otherwise).
 
@@ -330,13 +330,12 @@ Full method and reproduction steps: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 4. `pytest` with coverage, failing under 85%.
 5. A separate job does a `docker build`.
 
-**Status: configured but not yet executed on GitHub** (nothing has been pushed since it was changed). The workflow file parses as valid YAML, and the same test command passes locally against real Postgres, Redis and Chromium. The most likely first-run problems are environment differences (for example, Chromium system packages), which pushing will reveal.
+**Status: passing on GitHub.** The first run (commit `c3e238d`, 6 Nov 2026) succeeded on every step: lint, format check, Chromium install, the full pytest run with the 85% coverage gate, and the Docker build. The Postgres and Redis service containers and the `TEST_*` variables were present, so the integration tests were enabled. The per-test log is not publicly readable, so I confirmed the job result and steps through the GitHub API but not the individual test counts; check the run page if you want to see them.
 
 ---
 
 ## Remaining known gaps
 
-- **The CI workflow has not yet run on GitHub.**
 - **Browser coverage is Chromium only**, and the tests check behaviour rather than visual layout.
 - **The load test was not re-run with request logging enabled**, so the published throughput numbers predate the logging middleware.
 - **No click analytics** (not implemented; it needs a design decision on durability vs redirect latency).
