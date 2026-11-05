@@ -34,7 +34,8 @@ Open http://localhost:8000 (UI) or http://localhost:8000/docs (interactive API d
 ### Tests and lint
 
 ```bash
-pytest        # uses in-memory SQLite and a fake cache; no Docker needed
+pytest        # fast tests: in-memory SQLite + fake cache, no Docker (integration tests skip)
+# Full suite incl. concurrency + migration tests on real Postgres: see TESTING.md
 ruff check . && ruff format --check .
 ```
 

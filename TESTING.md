@@ -6,6 +6,18 @@ This document records every kind of check performed on the project, what each on
 
 | # | Check | Tool | What it proves | Outcome |
 |---|---|---|---|---|
+| 1 | Unit/integration tests (fast, SQLite + fake cache) | pytest + FastAPI TestClient | Application logic behaves correctly | 30 / 30 passed |
+| 2 | **Concurrency tests on real Postgres** | pytest + threads + Postgres | The DB constraints hold under simultaneous requests | 3 / 3 passed; **mutation-checked** |
+| 3 | **Migration tests on real Postgres** | pytest + Alembic + Postgres | Migrations build the schema the models declare, keep data, and reverse | 3 / 3 passed |
+| 4 | **Code coverage** | pytest-cov | How much of `app/` the tests execute | 92%, gated at 85% in CI |
+| 5 | Lint and formatting | ruff | Code is clean, consistent, free of common bugs | 0 issues |
+| 6 | Manual real-infrastructure end-to-end check | Docker Compose + curl | Full stack works with real Postgres, Redis and the container image | All steps passed |
+| 7 | Load test | Locust | Throughput and latency, and the value of the cache | 0 failures; numbers below |
+| 8 | Continuous integration | GitHub Actions | Checks 1-5 plus a Docker build run on every push | Configured (now with Postgres), **not yet run on GitHub** |
+
+Total: **36 tests** (30 run anywhere; 6 more run when `TEST_DATABASE_URL` points at a Postgres test database, and are skipped otherwise).
+
+---|---|---|---|---|
 | 1 | Automated unit/integration tests | pytest + FastAPI TestClient | Application logic behaves correctly | 22 / 22 passed |
 | 2 | Lint and formatting | ruff | Code is clean, consistent, free of common bugs | 0 issues |
 | 3 | Real-infrastructure end-to-end check | Docker Compose + curl | It works with real Postgres and Redis, not just test doubles | All steps passed |
@@ -15,7 +27,7 @@ This document records every kind of check performed on the project, what each on
 
 ---
 
-## 1. Automated tests (pytest)
+## 1. Automated tests (pytest, fast)
 
 **Tool:** [pytest](https://pytest.org) with FastAPI's `TestClient` (an in-process HTTP client from `httpx`). Run with `pytest`.
 
@@ -26,7 +38,7 @@ This document records every kind of check performed on the project, what each on
 - **Cache:** a `FakeCache` (a Python dict) instead of Redis. It records the TTL passed to `set` and counts `incr` calls, so tests can assert on caching and rate-limit behaviour.
 - Because of these substitutes, tests prove *application logic*. They do **not** prove Postgres- or Redis-specific behaviour. That is why checks 3 and 4 exist.
 
-**Outcome: 22 passed in about 0.2 s.**
+**Outcome: 22 passed in about 0.2 s** (30 including the service and UI tests below).
 
 ### `tests/test_urls.py` (core behaviour)
 
@@ -60,9 +72,77 @@ This document records every kind of check performed on the project, what each on
 | `test_rate_limit_does_not_apply_to_redirects` | Redirects are never rate limited, only `POST /shorten` |
 | `test_rate_limit_fails_open_when_redis_down` | If Redis fails, the counter returns `None` (callers allow the request) rather than blocking everyone |
 
-**Not covered by automated tests (honest gaps):** a true concurrency race (two simultaneous creates of the same URL against real Postgres), the Alembic migrations in CI, and the HTML UI. The concurrency safety rests on the database `UNIQUE` constraint by design, but I have not written a test that races real threads.
+### `tests/test_services.py` (collision and retry paths, added later)
+
+| Test | What it measures / verifies |
+|---|---|
+| `test_default_link_retries_on_random_code_collision` | If the random code is already taken, the service retries and succeeds with a new code |
+| `test_expiring_link_retries_on_random_code_collision` | Same retry behaviour on the custom/expiring path |
+| `test_gives_up_after_max_attempts` | If every attempt collides, it raises an error instead of looping forever, and writes nothing |
+| `test_alias_taken_raises` | A duplicate alias raises `AliasTakenError` (which the API turns into 409) |
+| `test_is_expired_handles_naive_datetimes` | Expiry works when the DB returns timezone-less datetimes (SQLite does) |
+
+### `tests/test_ui.py` (UI wiring, added later)
+
+**What it means:** these are lightweight checks of the served HTML with no browser. They catch broken wiring (missing form fields, a hard-coded `localhost:8000`, a payload the API wouldn't accept). They do **not** test visual rendering or JavaScript behaviour; that would need a browser tool such as Playwright.
+
+| Test | What it measures / verifies |
+|---|---|
+| `test_index_served_with_form_controls` | `/` returns HTML containing the URL, alias, expiry and result elements |
+| `test_ui_calls_same_origin_api` | The page calls `/shorten` on its own origin; no hard-coded host |
+| `test_ui_sends_fields_the_api_accepts` | The page sends `target_url`, `custom_alias`, `expires_in_seconds`, and the API accepts that payload |
 
 ---
+
+## 1b. Concurrency tests on real Postgres
+
+**Files:** `tests/integration/test_concurrency.py`. **Tools:** pytest, Python `threading` + `ThreadPoolExecutor`, a real PostgreSQL 15 database.
+
+**What it means:** the earlier design claim was "creating the same URL or alias at the same time is safe because the *database* enforces uniqueness, not application checks". Only a real database with truly simultaneous transactions can prove that. Each test starts 30 threads, each with its own DB session, and releases them at the same instant using a `threading.Barrier`.
+
+| Test | What it measures / verifies | Outcome |
+|---|---|---|
+| `test_same_url_concurrently_yields_one_row_and_one_code` | 30 threads shorten the same URL at once (repeated for 10 different URLs). All must succeed, get the **same code**, and leave **exactly 1 row** | Passed |
+| `test_same_alias_concurrently_has_exactly_one_winner` | 30 threads claim the same alias. Exactly **1 wins**, the other **29 get `AliasTakenError`** | Passed |
+| `test_many_distinct_urls_concurrently_all_succeed_with_unique_codes` | 30 different URLs at once: all succeed, all codes are unique (no false conflicts) | Passed |
+
+**Mutation check (proving the test can fail):** a test that always passes proves nothing. I removed the `UNIQUE` constraint from `target_hash` on the test database and re-ran the same race. **Result: 10 of 10 URLs ended up with duplicate rows** (one URL had 24 rows with 24 different codes). So the test detects the bug it was written for, and the passing result with the constraint in place is meaningful.
+
+**Limits:** this exercises the service layer directly (not 30 HTTP requests), and a race test can in principle pass by luck; the 10 repetitions and the mutation result make that very unlikely, but it is not a mathematical proof.
+
+---
+
+## 1c. Migration tests on real Postgres
+
+**File:** `tests/integration/test_migrations.py`. **Tools:** pytest, Alembic (run as a subprocess, like a real deploy), Postgres, and Alembic's `compare_metadata`.
+
+**What it means:** migrations are the only way production schemas change, so they need their own tests. Each test starts from an empty schema.
+
+| Test | What it measures / verifies | Outcome |
+|---|---|---|
+| `test_upgrade_head_on_empty_database_matches_models` | Running all migrations from scratch produces **exactly** the schema declared in `app/models.py`. Alembic's `compare_metadata` must report zero differences, so it catches "changed the model, forgot the migration" | Passed |
+| `test_upgrade_preserves_existing_rows` | A row created under schema `0001` survives the upgrade to `0002` | Passed |
+| `test_downgrade_keeps_default_links_and_drops_custom_ones` | Downgrade keeps plain links, deliberately deletes alias/expiring links (they can't fit the old schema), and the DB can upgrade again afterwards | Passed |
+
+**Safety:** these tests wipe the `public` schema, so they refuse to run unless the database name contains `test`.
+
+---
+
+## 1d. Code coverage
+
+**Tool:** `pytest-cov` (`pytest --cov=app`). **What it means:** the percentage of lines in `app/` executed by at least one test. It shows what is *untested*, not whether the tests are good (the mutation check above is the better evidence of quality).
+
+**Outcome:** **92%** (was 90% before the new tests; `app/main.py` went from 98% to 100%). CI fails if it drops below **85%**.
+
+| Module | Coverage | Not covered |
+|---|---|---|
+| `main.py`, `models.py`, `schemas.py`, `config.py`, `ratelimit.py` | 100% | none |
+| `services.py` | 98% | one defensive line |
+| `cache.py` | 76% | the real Redis success paths and `NullCache` (the Redis happy path is covered by the manual end-to-end check and load test, not by pytest) |
+| `database.py` | 69% | the real `get_db` session dependency (tests override it) |
+
+---
+
 
 ## 2. Lint and formatting (ruff)
 
@@ -171,26 +251,45 @@ Full method and reproduction steps: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 ## 6. Continuous integration (GitHub Actions)
 
-**File:** `.github/workflows/ci.yml`. On every push to `main` and every pull request it runs: `ruff check`, `ruff format --check`, `pytest`, and a `docker build`.
+**File:** `.github/workflows/ci.yml`. On every push to `main` and every pull request it runs:
+1. `ruff check` and `ruff format --check`
+2. `pytest` with coverage, failing under 85%. A **Postgres 15 service container** is started and `TEST_DATABASE_URL` is set, so the **concurrency and migration tests run in CI too** (they are not skipped there).
+3. A separate job does a `docker build`.
 
-**Status: configured but not yet executed on GitHub** (nothing has been pushed since it was added). The same commands pass locally. Pushing will confirm it works in a clean environment.
+**Status: configured but not yet executed on GitHub** (nothing has been pushed since it was changed). The workflow file parses as valid YAML, and the exact test command (`pytest -q --cov=app --cov-fail-under=85` with `TEST_DATABASE_URL` set) passes locally against a real Postgres. Pushing will confirm it in a clean environment.
 
 ---
+
+## Remaining known gaps
+
+- **No true browser UI test** (rendering, JavaScript behaviour). Would need Playwright.
+- **Redis success paths** are verified manually and by the load test, not by pytest. A Redis service in CI would close this.
+- **Concurrency tests call the service layer**, not concurrent HTTP requests.
+- The CI workflow has not yet run on GitHub.
+
+---
+
 
 ## How to re-run everything
 
 ```bash
-# 1 + 2: tests and lint (no Docker needed)
+# Fast tests and lint (no Docker needed; integration tests are skipped)
 pip install -r requirements-dev.txt
 pytest
 ruff check . && ruff format --check .
 
-# 3 + 4: real stack and migrations
+# Everything, including real-Postgres concurrency + migration tests, with coverage
+docker compose up -d postgres
+docker compose exec postgres psql -U postgres -c "create database url_shortener_test"
+export TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/url_shortener_test
+pytest --cov=app --cov-report=term-missing
+
+# Manual real-stack check and migrations
 docker compose up -d --build
 curl localhost:8000/health
 docker compose run --rm api alembic upgrade head      # re-apply/inspect migrations
 
-# 5: load test
+# Load test
 pip install -r requirements-loadtest.txt
 RATE_LIMIT_PER_MINUTE=100000000 docker compose up -d --build
 locust -f loadtest/locustfile.py --headless -u 50 -r 50 -t 30s --host http://localhost:8000

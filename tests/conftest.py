@@ -56,3 +56,4 @@ def client(cache):
     app.dependency_overrides[get_cache] = lambda: cache
     yield TestClient(app)
     app.dependency_overrides.clear()
+    engine.dispose()
