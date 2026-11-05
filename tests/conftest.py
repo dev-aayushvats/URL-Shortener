@@ -17,12 +17,19 @@ from app.main import app
 class FakeCache:
     def __init__(self):
         self.store: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}
+        self.counters: dict[str, int] = {}
 
     def get(self, key):
         return self.store.get(key)
 
-    def set(self, key, value):
+    def set(self, key, value, ttl=None):
         self.store[key] = value
+        self.ttls[key] = ttl
+
+    def incr(self, key, window_seconds):
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
 
 
 @pytest.fixture

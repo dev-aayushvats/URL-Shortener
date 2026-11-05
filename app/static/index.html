@@ -56,6 +56,16 @@
     <div class="input-group">
         <label for="urlInput">Enter URL to shorten:</label>
         <input type="url" id="urlInput" placeholder="https://example.com/long/url" required>
+        <label for="aliasInput">Custom alias (optional):</label>
+        <input type="text" id="aliasInput" placeholder="my-link" pattern="[A-Za-z0-9_-]{3,32}">
+        <label for="expiryInput">Expires in (optional):</label>
+        <select id="expiryInput">
+            <option value="">Never</option>
+            <option value="3600">1 hour</option>
+            <option value="86400">1 day</option>
+            <option value="604800">7 days</option>
+            <option value="2592000">30 days</option>
+        </select>
         <button onclick="shortenUrl()">Shorten URL</button>
     </div>
     
@@ -84,11 +94,21 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        target_url: urlInput.value
+                        target_url: urlInput.value,
+                        custom_alias: document.getElementById('aliasInput').value || null,
+                        expires_in_seconds: Number(document.getElementById('expiryInput').value) || null
                     }),
                 });
                 
                 const data = await response.json();
+
+                if (!response.ok) {
+                    const detail = Array.isArray(data.detail)
+                        ? data.detail.map(d => d.msg).join(', ')
+                        : data.detail;
+                    alert(`Error ${response.status}: ${detail}`);
+                    return;
+                }
                 
                 // Display the JSON result
                 jsonResult.textContent = JSON.stringify(data, null, 2);

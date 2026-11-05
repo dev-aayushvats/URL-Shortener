@@ -64,7 +64,7 @@ The URL shortener provides the following REST API endpoints:
 | Endpoint | Method | Description | Request Body | Response |
 |----------|--------|-------------|--------------|----------|
 | `/` | GET | HTML interface for the URL shortener | None | HTML page |
-| `/shorten` | POST | Create a short URL | `{"target_url": "https://example.com/..."}` | JSON with short code and URL |
+| `/shorten` | POST | Create a short URL (rate limited: 10/min per IP) | `{"target_url": "...", "custom_alias": "optional", "expires_in_seconds": 3600}` | JSON with short code, URL, `expires_at` |
 | `/{short_code}` | GET | Redirect to original URL | None | HTTP redirect to target URL |
 
 #### Create a Short URL
@@ -99,6 +99,20 @@ curl -X 'POST' \
   "target_url": "https://example.com/very/long/url/that/needs/to/be/shortened"
 }'
 ```
+
+#### Custom alias and expiry (both optional)
+
+```bash
+curl -X POST localhost:8000/shorten -H 'Content-Type: application/json' \
+  -d '{"target_url": "https://example.com/x", "custom_alias": "my-link", "expires_in_seconds": 86400}'
+```
+
+| Status | Meaning |
+|---|---|
+| 409 | Alias already taken |
+| 422 | Invalid/reserved alias, or expiry outside 60s - 1 year |
+| 429 | Rate limit exceeded (see `Retry-After` header) |
+| 410 | (on redirect) link has expired |
 
 #### Use a Short URL
 
@@ -140,3 +154,7 @@ The `urls` table stores mappings between short codes and target URLs:
 - **Cache-aside:** Redis is consulted first; any Redis failure degrades to a cache miss instead of an error.
 - **302 redirects** so browsers don't permanently cache the mapping (keeps expiry/analytics possible).
 - **Config** via environment variables (`pydantic-settings`); `.env` is git-ignored, `.env.example` is committed.
+- **Aliases and expiry:** default links are deduplicated (same URL, same code). Custom/expiring links always create a new mapping, so `target_hash` is only set for default links (NULL otherwise; the UNIQUE constraint ignores NULLs).
+- **Expiry is enforced in the cache too:** cached entries get `min(24h, remaining lifetime)` as TTL, so an expired link can never be served from Redis.
+- **Rate limiting:** fixed-window counter in Redis (`INCR` + `EXPIRE NX` in one transaction), per client IP, on `POST /shorten` only. It fails open if Redis is down. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy ip>`. Fixed windows allow up to 2x bursts at window edges; a sliding window or token bucket would be the upgrade.
+- Settings: `RATE_LIMIT_PER_MINUTE`, `MIN_EXPIRY_SECONDS`, `MAX_EXPIRY_SECONDS` (env vars).

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     cache_ttl_seconds: int = 86400  # 24 hours
     short_code_length: int = 8
+    rate_limit_per_minute: int = 10  # POST /shorten, per client IP
+    min_expiry_seconds: int = 60
+    max_expiry_seconds: int = 365 * 86400
 
 
 @lru_cache

@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 class Cache(Protocol):
     def get(self, key: str) -> str | None: ...
-    def set(self, key: str, value: str) -> None: ...
+    def set(self, key: str, value: str, ttl: int | None = None) -> None: ...
+    def incr(self, key: str, window_seconds: int) -> int | None: ...
 
 
 class RedisCache:
@@ -32,11 +33,29 @@ class RedisCache:
             logger.warning("Redis GET failed; treating as cache miss", exc_info=True)
             return None
 
-    def set(self, key: str, value: str) -> None:
+    def set(self, key: str, value: str, ttl: int | None = None) -> None:
+        # Never cache longer than the caller allows (e.g. a link's remaining lifetime).
+        ex = min(ttl, self._ttl) if ttl is not None else self._ttl
+        if ex <= 0:
+            return
         try:
-            self._client.set(key, value, ex=self._ttl)
+            self._client.set(key, value, ex=ex)
         except redis.RedisError:
             logger.warning("Redis SET failed; continuing without cache", exc_info=True)
+
+    def incr(self, key: str, window_seconds: int) -> int | None:
+        """Atomically increment a counter that expires after the window.
+
+        Returns None if Redis is unavailable (callers should fail open).
+        """
+        try:
+            pipe = self._client.pipeline(transaction=True)
+            pipe.incr(key)
+            pipe.expire(key, window_seconds, nx=True)
+            return int(pipe.execute()[0])
+        except redis.RedisError:
+            logger.warning("Redis INCR failed; rate limiting skipped", exc_info=True)
+            return None
 
 
 def get_cache() -> Cache:
