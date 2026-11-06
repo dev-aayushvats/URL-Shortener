@@ -1,8 +1,7 @@
 # Load test results
 
-Measured with [Locust](https://locust.io) (`loadtest/locustfile.py`).
-
-> **Note:** these runs were made before request logging (`RequestLogMiddleware`) was added, so they exclude its overhead. Re-run the load test before quoting them as current.
+Measured with [Locust](https://locust.io) (`loadtest/locustfile.py`). Two sessions are recorded: the first was
+run before request logging existed, the second (6 Nov 2026) re-ran everything with logging on **and** off.
 
 ## Method
 
@@ -11,29 +10,51 @@ Measured with [Locust](https://locust.io) (`loadtest/locustfile.py`).
 - **Rate limiter** raised to effectively unlimited for the test (`RATE_LIMIT_PER_MINUTE=100000000`).
 - **Stack:** API + Postgres 15 + Redis 7 in Docker Compose. Redirects use a primary-key lookup.
 - **Hardware:** MacBook (Apple M1, 8 cores), Docker Desktop VM with 4 CPUs / ~5 GB. Locust ran on the same machine.
+- **Configurations:** A = no cache, 1 worker; B = Redis cache, 1 worker; C = Redis cache, 4 workers (`WEB_CONCURRENCY=4`).
+- **Logging on** = `LOG_LEVEL=INFO` (one JSON access-log line per request to stdout, collected by Docker). **Logging off** = `LOG_LEVEL=WARNING` (verified: 0 access-log lines emitted).
 
 ## Results
 
-| Configuration | Total req/s | Redirect p50 | Redirect p95 | Redirect p99 | Failures |
-|---|---|---|---|---|---|
-| A. No cache, 1 worker (`CACHE_ENABLED=false`) | 554 | 73 ms | 140 ms | 180 ms | 0 |
-| B. Redis cache, 1 worker | 910 | 41 ms | 69 ms | 100 ms | 0 |
-| C. Redis cache, 4 workers (`WEB_CONCURRENCY=4`) | 1,256 | 24 ms | 59 ms | 110 ms | 0 |
+Redirect latency is for `GET /{code}`. Every run below had **0 failed requests**.
 
-- **Cache effect (A to B):** redirect throughput +64% (525 to 864 req/s), redirect p95 -51% (140 to 69 ms).
-- **Scaling out (B to C):** a further +38% throughput (910 to 1,256 req/s total) and lower median latency from 4 workers.
+### Session 2: with logging middleware (6 Nov 2026), same machine state for both blocks
+
+| Config | Logging | Total req/s | Redirect p50 | Redirect p95 | Redirect p99 |
+|---|---|---|---|---|---|
+| A. No cache, 1 worker | on | 373 | 92 ms | 260 ms | 620 ms |
+| A. No cache, 1 worker | off | 423 | 89 ms | 210 ms | 320 ms |
+| B. Cache, 1 worker | on | 621 | 54 ms | 130 ms | 230 ms |
+| B. Cache, 1 worker | off | 626 | 51 ms | 140 ms | 240 ms |
+| C. Cache, 4 workers | on | 702 | 37 ms | 120 ms | 280 ms |
+| C. Cache, 4 workers | off | 999 | 29 ms | 67 ms | 140 ms |
+
+### Session 1: before logging existed (5 Nov 2026)
+
+| Config | Total req/s | Redirect p50 | Redirect p95 | Redirect p99 |
+|---|---|---|---|---|
+| A. No cache, 1 worker | 554 | 73 ms | 140 ms | 180 ms |
+| B. Cache, 1 worker | 910 | 41 ms | 69 ms | 100 ms |
+| C. Cache, 4 workers | 1,256 | 24 ms | 59 ms | 110 ms |
+
+## What the results show
+
+- **The cache helps, consistently.** Redirect throughput with cache vs. without (1 worker): **+64%** in session 1, **+67%** in session 2 with logging, **+48%** in session 2 without logging. Redirect p95 falls by roughly a third to a half in all three comparisons. A reasonable summary is "about +50-65% redirect throughput and about 35-50% lower p95".
+- **More workers help, with diminishing returns.** 4 workers vs. 1 (cache on): +38% (session 1), +13% (session 2, logging on), +60% (session 2, logging off).
+- **Logging overhead is real but not cleanly measured.** Same-session, logging on vs. off: roughly -12% (config A), ~0% (B, within noise) and -30% (C, 4 workers) in total throughput. I ran each configuration once, so I can't separate the overhead from run-to-run noise, and the largest effect (C) may also reflect the single Docker log pipe being shared by four workers. Setting `LOG_LEVEL=WARNING` disables access logs if throughput matters more than request logs.
 
 ## Reading these numbers honestly
 
-- **Closed-loop test:** with 50 users and no think time the server is always saturated, so latency here is mostly queueing (Little's law: latency is roughly concurrency / throughput). Compare configurations with each other; don't read the absolute latencies as what a user sees at normal load.
-- **Cache benefit is understated:** the table is tiny, so the Postgres lookup is already fast (the whole DB fits in memory). With a large table and cold pages, the gap would be wider. Postgres and Redis are both a network hop away, so the cache saves a query, not a round-trip.
-- **Single run per configuration** on a laptop with the load generator sharing the CPU; expect some run-to-run variance (I'd treat differences under ~10% as noise). Scaling from 1 to 4 workers is sub-linear partly because Postgres, Redis and Locust compete for the same 4-CPU VM.
-- `POST /shorten` is slower (p50 110 ms with 1 worker) because it writes to Postgres and goes through the rate-limit Redis call.
+- **Absolute numbers are not comparable across sessions.** The no-logging control in session 2 (423 / 626 / 999 req/s) is 20-30% lower than session 1 (554 / 910 / 1,256) even though the code path is the same apart from logging being off. Docker Desktop had just been restarted and the laptop state differed. Only compare numbers from the same session (same table block).
+- **Closed-loop test:** 50 users with no think time keep the server saturated, so latency is mostly queueing time (Little's law: latency is roughly concurrency / throughput). It shows relative differences, not what a user sees at normal load.
+- **Cache benefit is probably understated:** the table is tiny, so the Postgres lookup is already fast.
+- **Single run per cell**, with Locust, Docker, Postgres, Redis and the API sharing the same CPUs. Treat differences under ~10-15% as noise.
+- `POST /shorten` is slower than redirects (it writes to Postgres and calls Redis for rate limiting), but it is only 5% of traffic.
+- A first attempt at the session-2 run was discarded because Docker Desktop stopped mid-run and every request failed; the numbers above are from a clean re-run.
 
 ## Reproduce
 
 ```bash
 pip install -r requirements-loadtest.txt
-RATE_LIMIT_PER_MINUTE=100000000 CACHE_ENABLED=true WEB_CONCURRENCY=1 docker compose up -d --build
+RATE_LIMIT_PER_MINUTE=100000000 CACHE_ENABLED=true WEB_CONCURRENCY=1 LOG_LEVEL=INFO docker compose up -d --build
 locust -f loadtest/locustfile.py --headless -u 50 -r 50 -t 30s --host http://localhost:8000
 ```

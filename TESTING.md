@@ -16,7 +16,7 @@ This document records every kind of check performed on the project, what each on
 | 8 | Code coverage | pytest-cov | How much of `app/` the tests execute | 93%, gated at 85% in CI |
 | 9 | Lint and formatting | ruff | Clean, consistent, no common bugs | 0 issues |
 | 10 | Manual real-infrastructure end-to-end check | Docker Compose + curl | Full container stack works | All steps passed |
-| 11 | Load test | Locust | Throughput and latency, value of the cache | 0 failures |
+| 11 | Load test (two sessions, logging on/off) | Locust | Throughput and latency, value of the cache, logging overhead | 0 failures in all valid runs |
 | 12 | Continuous integration | GitHub Actions | All of the above on every push | **Passed on GitHub** (run on commit `c3e238d`: `test` job 87 s, `docker-build` job 23 s) |
 
 Total: **55 tests**: 35 run anywhere with no setup, and 20 more run when `TEST_DATABASE_URL` and `TEST_REDIS_URL` point at test databases (skipped otherwise).
@@ -194,7 +194,7 @@ Example access-log line (real output):
 | `test_access_log_is_structured` | The access log record has method, path, status and duration |
 | `test_json_formatter_output` | The formatter emits valid JSON including extra fields |
 
-Settings: `LOG_LEVEL` (default `INFO`) and `LOG_FORMAT` (`json` or `text`). The middleware is pure ASGI, so it avoids the overhead of Starlette's `BaseHTTPMiddleware`. Logging every redirect at INFO has a cost at high request rates; I did not re-run the load test with logging enabled.
+Settings: `LOG_LEVEL` (default `INFO`) and `LOG_FORMAT` (`json` or `text`). The middleware is pure ASGI, so it avoids the overhead of Starlette's `BaseHTTPMiddleware`. Logging every redirect at INFO has a measurable cost at high request rates (roughly 0-30% throughput in the load test, see section 5); set `LOG_LEVEL=WARNING` to disable access logs.
 
 ---
 
@@ -307,6 +307,18 @@ Per-endpoint detail:
 | C | GET /{code} | 34,879 | 1,195 | 24 | 59 | 110 |
 | C | POST /shorten | 1,763 | 60 | 43 | 130 | 250 |
 
+### Re-run with logging (6 Nov 2026)
+
+After adding request logging, the whole test was repeated with logging on (`LOG_LEVEL=INFO`) and off (`LOG_LEVEL=WARNING`) in the same session. Redirect p95 / total req/s:
+
+| Config | Logging on | Logging off |
+|---|---|---|
+| A. No cache, 1 worker | 260 ms / 373 | 210 ms / 423 |
+| B. Cache, 1 worker | 130 ms / 621 | 140 ms / 626 |
+| C. Cache, 4 workers | 120 ms / 702 | 67 ms / 999 |
+
+Takeaways: the cache benefit held up (+48% to +67% redirect throughput across the three comparisons); logging cost roughly 0-30% throughput depending on configuration (single runs, so partly noise); and absolute numbers shifted 20-30% between sessions, so only same-session numbers should be compared. Full detail: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
+
 ### Conclusions
 - **Cache effect (A to B):** redirect throughput **+64%** (525 to 864 req/s); redirect p95 **-51%** (140 to 69 ms).
 - **Scaling out (B to C):** four worker processes gave a further **+38%** total throughput.
@@ -337,7 +349,7 @@ Full method and reproduction steps: [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 ## Remaining known gaps
 
 - **Browser coverage is Chromium only**, and the tests check behaviour rather than visual layout.
-- **The load test was not re-run with request logging enabled**, so the published throughput numbers predate the logging middleware.
+- **Load-test cells are single runs**, and the logging-overhead estimate (roughly 0-30%) is not statistically separated from noise. Repeating each cell 3-5 times would tighten it.
 - **No click analytics** (not implemented; it needs a design decision on durability vs redirect latency).
 - Race tests can in principle pass by luck; repetition and the mutation checks make that very unlikely, but it is not a formal proof.
 

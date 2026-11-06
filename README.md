@@ -174,7 +174,7 @@ All settings are environment variables (or a `.env` file; see `.env.example`).
 | `SHORT_CODE_LENGTH` | `8` | Length of generated codes |
 | `RATE_LIMIT_PER_MINUTE` | `10` | `POST /shorten` limit per client IP |
 | `MIN_EXPIRY_SECONDS` / `MAX_EXPIRY_SECONDS` | `60` / 1 year | Allowed `expires_in_seconds` range |
-| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | Logging (`json` or `text`) |
+| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | Logging (`json` or `text`); `WARNING` turns off per-request access logs |
 | `WEB_CONCURRENCY` | `1` | Number of uvicorn worker processes (read by uvicorn) |
 
 ## Design notes
@@ -187,5 +187,5 @@ All settings are environment variables (or a `.env` file; see `.env.example`).
 - **Aliases and expiry:** default links are deduplicated (same URL, same code). Custom/expiring links always create a new mapping, so `target_hash` is only set for default links (NULL otherwise; the UNIQUE constraint ignores NULLs).
 - **Expiry is enforced in the cache too:** cached entries get `min(24h, remaining lifetime)` as TTL, so an expired link can never be served from Redis.
 - **Rate limiting:** fixed-window counter in Redis (`INCR` + `EXPIRE NX` in one transaction), per client IP, on `POST /shorten` only. It fails open if Redis is down. Behind a proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy ip>`. Fixed windows allow up to 2x bursts at window edges; a sliding window or token bucket would be the upgrade.
-- **Measured:** ~910 req/s on one worker and ~1,250 req/s on four (95% redirects / 5% creates, laptop); the Redis cache gave +64% redirect throughput and halved p95 latency vs. no cache. See [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for method and caveats.
+- **Measured** (95% redirects / 5% creates, 50 concurrent users, laptop): about 620-910 req/s on one worker and 700-1,250 on four, depending on session and whether access logging is on; the Redis cache gave roughly +50-65% redirect throughput and 35-50% lower p95 latency vs. no cache. Absolute numbers vary between sessions, so see [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for method, both result sets and caveats.
 - **Observability:** JSON logs (one line per request with `request_id`, status, duration) and an `X-Request-ID` header for tracing. `LOG_LEVEL` and `LOG_FORMAT` (`json`/`text`) are configurable.
